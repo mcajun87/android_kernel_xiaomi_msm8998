@@ -31,9 +31,9 @@ jobs:
           # 指定 Clang 编译器
           CC=clang
 
-          # 生成配置
-          # 关键修正：指定正确的配置文件路径
-          make ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} ${CC} vendor/xiaomi/chiron.config
+          # 生成配置 (关键修正点)
+          # KCONFIG_ALLCONFIG 指向具体的配置文件路径
+          make KCONFIG_ALLCONFIG=arch/arm64/configs/vendor/xiaomi/chiron.config ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} ${CC} defconfig
 
           # 开始编译
           make ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CC=${CC} LLVM=1 -j$(nproc) Image.gz-dtb
