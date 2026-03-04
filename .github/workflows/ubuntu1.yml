@@ -1,0 +1,45 @@
+name: Build Kernel for Chiron (LineageOS 23.2)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出代码
+      - uses: actions/checkout@v4
+        with:
+          ref: lineage-23.2
+
+      # 2. 安装依赖
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git make gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu clang lld
+
+      # 3. 编译内核
+      - name: Build kernel
+        run: |
+          # 定义架构
+          ARCH=arm64
+          # 指定交叉编译工具链前缀
+          CROSS_COMPILE=aarch64-linux-gnu-
+          # 指定 Clang 编译器
+          CC=clang
+
+          # 生成配置 (关键修正点)
+          # 使用 KCONFIG_ALLCONFIG 指向具体的配置文件路径
+          make KCONFIG_ALLCONFIG=arch/arm64/configs/vendor/xiaomi/chiron.config ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} ${CC} defconfig
+
+          # 开始编译
+          make ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CC=${CC} LLVM=1 -j$(nproc) Image.gz-dtb
+
+      # 4. 上传产物
+      - name: Upload kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-chiron
+          path: arch/arm64/boot/Image.gz-dtb
+
