@@ -13,45 +13,42 @@ jobs:
         with:
           ref: lineage-23.2
 
-      # 2. 安装基础依赖
+      # 2. 安装依赖 (包含 GCC 交叉编译工具链)
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y git make gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libelf-dev
+          sudo apt install -y git make libssl-dev libelf-dev libncurses-dev flex bison
 
-      # 3. 下载 Google Clang (Android 16)
-      - name: Download Google Clang (Android 16 Stable)
+      # 3. 下载 GCC 交叉编译工具链 (推荐使用 Android 源码中的 AOSP 工具链)
+      - name: Download AOSP GCC
         run: |
-          # 创建预编译目录
-          mkdir -p ${GITHUB_WORKSPACE}/prebuilts/clang/host/linux-x86
-          # 进入目录
-          cd ${GITHUB_WORKSPACE}/prebuilts/clang/host/linux-x86
-          # 下载 Android 16 的 Clang (r547379)
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-release/clang-r547379.tar.gz
-          # 解压
-          tar -xzf clang-r547379.tar.gz
-          # 清理压缩包
-          rm clang-r547379.tar.gz
+          cd ${GITHUB_WORKSPACE}
+          # 下载 AOSP 官方预编译的 GCC (支持 ARM64)
+          wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android13-release.tar.gz
+          tar -xzf android13-release.tar.gz
+          rm android13-release.tar.gz
 
       # 4. 编译内核
       - name: Build Kernel
         run: |
           # --- 环境变量设置 ---
-          # 1. 将 Google Clang 的 bin 目录添加到 PATH 的最前面
-          export PATH="${GITHUB_WORKSPACE}/prebuilts/clang/host/linux-x86/clang-r547379/bin:${PATH}"
+          # 1. 设置 GCC 路径 (注意：使用 aarch64-linux-android-gcc 的路径)
+          # 这里的 gcc 二进制文件通常在 bin 目录下
+          export PATH="${GITHUB_WORKSPACE}/aarch64-linux-android-4.9/bin:${PATH}"
+          
           # 2. 设置架构
           export ARCH=arm64
           export SUBARCH=arm64
-          # 3. 开启 LLVM 模式
-          export LLVM=1
+          
+          # 3. 设置交叉编译前缀 (非常重要)
+          export CROSS_COMPILE=aarch64-linux-android-
 
-          # 验证是否找到正确的 Clang
-          echo "Using Clang version:"
-          clang --version
+          # 验证是否找到正确的 GCC
+          echo "Using Compiler:"
+          ${CROSS_COMPILE}gcc --version
 
           # --- 生成配置 ---
-          # 关键修正：路径必须包含 "vendor"
-          # 使用 KCONFIG_ALLCONFIG 指向 .config 文件
+          # 使用 Chiron (小米 MIX 2) 的专用配置
           make O=out KCONFIG_ALLCONFIG=arch/arm64/configs/vendor/xiaomi/chiron.config defconfig
 
           # --- 开始编译 ---
