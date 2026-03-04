@@ -1,11 +1,11 @@
-name: Build Kernel for chiron (LineageOS 23.2)
+name: Build Kernel for Chiron (LineageOS 23.2)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     steps:
       # 1. 检出代码
@@ -14,30 +14,28 @@ jobs:
           ref: lineage-23.2
 
       # 2. 安装依赖
-      # 注意：Clang-12 在 Ubuntu 20.04 上可能需要添加源，这里改用 Clang-14 或 15 更稳妥
-      # 如果你必须用 Clang-12，请确保源可用
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential git gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu clang lld
+          sudo apt install -y git make gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu clang lld
 
       # 3. 编译内核
       - name: Build kernel
         run: |
           # 定义架构
           ARCH=arm64
-          
-          # 指定交叉编译工具链前缀（注意：Ubuntu 20.04 安装后通常是 aarch64-linux-gnu-）
+
+          # 指定交叉编译工具链前缀
           CROSS_COMPILE=aarch64-linux-gnu-
-          
+
           # 指定 Clang 编译器
           CC=clang
-          
+
           # 生成配置
-          make ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} ${CC} chiron_defconfig
-          
+          # 关键修正：指定正确的配置文件路径
+          make ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} ${CC} vendor/xiaomi/chiron.config
+
           # 开始编译
-          # 使用 lld (LLVM 链接器) 加速链接过程，如果内核支持的话
           make ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CC=${CC} LLVM=1 -j$(nproc) Image.gz-dtb
 
       # 4. 上传产物
