@@ -13,44 +13,47 @@ jobs:
         with:
           ref: lineage-23.2
 
-      # 2. 安装依赖
+      # 2. 安装基础依赖
       - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y git make gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libelf-dev
 
-      # 3. 下载 Android 16 正式版 Clang
+      # 3. 下载 Google Clang (Android 16)
       - name: Download Google Clang (Android 16 Stable)
         run: |
-          echo "Downloading Clang for Android 16..."
-          # 使用 android16-release 分支，这是 Android 16 的正式分支
-          git clone --depth 1 --branch android16-release https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang
+          # 创建预编译目录
+          mkdir -p ${GITHUB_WORKSPACE}/prebuilts/clang/host/linux-x86
+          # 进入目录
+          cd ${GITHUB_WORKSPACE}/prebuilts/clang/host/linux-x86
+          # 下载 Android 16 的 Clang (r547379)
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-release/clang-r547379.tar.gz
+          # 解压
+          tar -xzf clang-r547379.tar.gz
+          # 清理压缩包
+          rm clang-r547379.tar.gz
 
       # 4. 编译内核
-      - name: Build kernel
+      - name: Build Kernel
         run: |
           # --- 环境变量设置 ---
+          # 1. 将 Google Clang 的 bin 目录添加到 PATH 的最前面
+          export PATH="${GITHUB_WORKSPACE}/prebuilts/clang/host/linux-x86/clang-r547379/bin:${PATH}"
+          # 2. 设置架构
           export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          # 将 Google Clang 加入 PATH
-          export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
-          
-          # 验证 Clang 版本
+          export SUBARCH=arm64
+          # 3. 开启 LLVM 模式
+          export LLVM=1
+
+          # 验证是否找到正确的 Clang
           echo "Using Clang version:"
           clang --version
 
           # --- 生成配置 ---
-          # 注意：KCONFIG_ALLCONFIG 指向你的 defconfig 文件
-          make KCONFIG_ALLCONFIG=arch/arm64/configs/vendor/xiaomi/chiron.config defconfig
+          # 关键修正：路径必须包含 "vendor"
+          # 使用 KCONFIG_ALLCONFIG 指向 .config 文件
+          make O=out KCONFIG_ALLCONFIG=arch/arm64/configs/vendor/xiaomi/chiron.config defconfig
 
           # --- 开始编译 ---
-          # 使用 LLVM=1 开启纯 Clang 编译模式
-          make -j$(nproc) LLVM=1 Image.gz-dtb
-
-      # 5. 上传内核镜像
-      - name: Upload kernel
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-chiron
-          path: arch/arm64/boot/Image.gz-dtb
+          # 编译 Image.gz-dtb
+          make O=out -j$(nproc) Image.gz-dtb
