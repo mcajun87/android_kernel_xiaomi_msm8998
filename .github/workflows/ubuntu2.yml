@@ -1,0 +1,56 @@
+name: Build Kernel for Chiron (LineageOS 23.2)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出代码
+      - uses: actions/checkout@v4
+        with:
+          ref: lineage-23.2
+
+      # 2. 安装基础依赖
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git make gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      # 3. 下载 Google 官方预编译 Clang (Android 推荐)
+      - name: Download Google Clang
+        run: |
+          # 下载最新的 Android Clang 预编译包
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android15-release/clang-r525760d.tar.gz
+          mkdir -p clang
+          tar -zxf clang-r525760d.tar.gz -C clang
+          rm clang-r525760d.tar.gz
+
+      # 4. 编译内核
+      - name: Build kernel
+        run: |
+          # 定义架构
+          ARCH=arm64
+          # 指定交叉编译工具链前缀
+          CROSS_COMPILE=aarch64-linux-gnu-
+          # 指向下载的 Google Clang
+          CLANG_TRIPLE=aarch64-linux-gnu-
+
+          # 添加 Clang 到 PATH
+          export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
+
+          # 生成配置
+          make KCONFIG_ALLCONFIG=arch/arm64/configs/vendor/xiaomi/chiron.config ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CC=clang CLANG_TRIPLE=${CLANG_TRIPLE} defconfig
+
+          # 开始编译
+          make ${ARCH} CROSS_COMPILE=${CROSS_COMPILE} CC=clang CLANG_TRIPLE=${CLANG_TRIPLE} -j$(nproc) Image.gz-dtb
+
+      # 5. 上传产物
+      - name: Upload kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-chiron
+          path: arch/arm64/boot/Image.gz-dtb
+
