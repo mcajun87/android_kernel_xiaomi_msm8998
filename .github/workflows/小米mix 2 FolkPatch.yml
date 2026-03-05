@@ -1,4 +1,4 @@
-name: Build MIX2 4.4 Kernel - ForkPatch Only
+name: Build MIX2 4.4 Kernel - FolkPatch Only
 
 on:
   workflow_dispatch:
