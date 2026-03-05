@@ -1,4 +1,4 @@
-name: Build Xiaomi MSM8998 Kernel (ubuntu2.yml)
+name: Build Xiaomi MSM8998 Kernel 
 
 on:
   workflow_dispatch:
