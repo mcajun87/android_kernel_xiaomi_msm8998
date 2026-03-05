@@ -1,56 +1,53 @@
-name: Build Kernel for Chiron (LineageOS 23.2)
+name: Build Xiaomi MIX 2 (chiron) 4.4 Kernel
 
 on:
   workflow_dispatch:
+    inputs:
+      suffix:
+        description: '内核版本后缀（如 v1.0）'
+        default: 'mix2-4.4-custom'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-20.04
     steps:
-      # 1. 检出代码
-      - uses: actions/checkout@v4
-        with:
-          ref: lineage-23.2
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
 
-      # 2. 安装依赖 (包含 GCC 交叉编译工具链)
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y git make libssl-dev libelf-dev libncurses-dev flex bison
+    - name: Install dependencies for kernel 4.4
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          bc bison flex libssl-dev rsync \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
 
-      # 3. 下载 GCC 交叉编译工具链 (推荐使用 Android 源码中的 AOSP 工具链)
-      - name: Download AOSP GCC
-        run: |
-          cd ${GITHUB_WORKSPACE}
-          # 下载 AOSP 官方预编译的 GCC (支持 ARM64)
-          wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/android13-release.tar.gz
-          tar -xzf android13-release.tar.gz
-          rm android13-release.tar.gz
+    - name: Build kernel 4.4
+      run: |
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
 
-      # 4. 编译内核
-      - name: Build Kernel
-        run: |
-          # --- 环境变量设置 ---
-          # 1. 设置 GCC 路径 (注意：使用 aarch64-linux-android-gcc 的路径)
-          # 这里的 gcc 二进制文件通常在 bin 目录下
-          export PATH="${GITHUB_WORKSPACE}/aarch64-linux-android-4.9/bin:${PATH}"
-          
-          # 2. 设置架构
-          export ARCH=arm64
-          export SUBARCH=arm64
-          
-          # 3. 设置交叉编译前缀 (非常重要)
-          export CROSS_COMPILE=aarch64-linux-android-
+        make clean
+        make chiron_defconfig
+        make -j$(nproc) Image.gz-dtb
 
-          # 验证是否找到正确的 GCC
-          echo "Using Compiler:"
-          ${CROSS_COMPILE}gcc --version
+        if [ ! -f arch/arm64/boot/Image.gz-dtb ]; then
+          echo "Build failed"
+          exit 1
+        fi
 
-          # --- 生成配置 ---
-          # 使用 Chiron (小米 MIX 2) 的专用配置
-          make O=out KCONFIG_ALLCONFIG=arch/arm64/configs/vendor/xiaomi/chiron.config defconfig
+    - name: Pack with AnyKernel3 (chiron)
+      run: |
+        git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AK3
+        cd AK3
+        cp ../arch/arm64/boot/Image.gz-dtb zImage
+        zip -r9 ../MIX2-Kernel-4.4-${{ inputs.suffix }}.zip ./*
 
-          # --- 开始编译 ---
-          # 编译 Image.gz-dtb
-          make O=out -j$(nproc) Image.gz-dtb
+    - name: Upload kernel zip
+      uses: actions/upload-artifact@v3
+      with:
+        name: MIX2-Kernel-4.4-${{ inputs.suffix }}
+        path: "MIX2-Kernel-*.zip"
+
