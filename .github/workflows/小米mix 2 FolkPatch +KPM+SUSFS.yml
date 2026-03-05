@@ -1,100 +1,61 @@
-name: Build MIX2 4.4 Kernel - FolkPatch + KPM + SUSFS
+name: Build MIX2 4.4 Kernel - FolkPatch + KPM + SUSFS Only
 
 on:
   workflow_dispatch:
     inputs:
       suffix:
-        description: '版本后缀 (如: v1.0-stable)'
+        description: '版本后缀'
         required: true
         default: 'mix2-folk-kpm-susfs'
 
 jobs:
   build:
-    # 4.4内核必须用20.04，22.04会因工具链版本过高导致编译失败
     runs-on: ubuntu-20.04
     steps:
-      - name: Checkout Kernel Source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Install Build Dependencies
+      - name: Install dependencies
         run: |
           sudo apt update -y
           sudo apt install -y bc bison flex libssl-dev make gcc-aarch64-linux-gnu zip git patch
 
-      - name: Integrate Official FolkPatch (with KPM)
+      # 只集成正确的 FolkPatch
+      - name: Integrate FolkPatch
         run: |
-          # 拉取你截图中的官方仓库
           git clone https://github.com/matsuzaka-yuki/FolkPatch --depth=1
-          
-          # FolkPatch 目录结构与 APatch 一致，天然支持 KPM
           cp -r FolkPatch/kernel_apatch include/
           cp -r FolkPatch/drivers/apatch drivers/
-          
-          # 启用核心配置：FolkPatch + KPM (配置项沿用 APatch 命名)
           echo "CONFIG_APATCH=y" >> arch/arm64/configs/chiron_defconfig
           echo "CONFIG_APATCH_KPM=y" >> arch/arm64/configs/chiron_defconfig
-          echo "CONFIG_APATCH_DEBUG=n" >> arch/arm64/configs/chiron_defconfig
 
-      - name: Integrate SUSFS (from ShirkNeko)
+      # 只集成 SUSFS
+      - name: Integrate SUSFS
         run: |
-          # 拉取 SUSFS 补丁仓库
           git clone https://github.com/ShirkNeko/susfs4ksu --depth=1
-          
-          # 4.4内核补丁适配逻辑：优先用专用补丁，失败则尝试通用补丁
-          PATCH_FILE=""
-          if [ -f "susfs4ksu/patches/4.4/add_susfs.patch" ]; then
-            PATCH_FILE="susfs4ksu/patches/4.4/add_susfs.patch"
-          elif [ -f "susfs4ksu/patches/add_susfs.patch" ]; then
-            PATCH_FILE="susfs4ksu/patches/add_susfs.patch"
+          if [ -f susfs4ksu/patches/4.4/add_susfs.patch ]; then
+            patch -p1 < susfs4ksu/patches/4.4/add_susfs.patch
           fi
-          
-          if [ -n "$PATCH_FILE" ]; then
-            echo "Applying SUSFS patch: $PATCH_FILE"
-            patch -p1 < "$PATCH_FILE" || {
-              echo "SUSFS patch failed! Continuing compilation..."
-            }
-            # 强制启用 SUSFS 配置
-            echo "CONFIG_SUSFS=y" >> arch/arm64/configs/chiron_defconfig
-            echo "CONFIG_SUSFS_DEBUG=n" >> arch/arm64/configs/chiron_defconfig
-          else
-            echo "No SUSFS patch found for 4.4 kernel!"
-            exit 1
-          fi
+          echo "CONFIG_SUSFS=y" >> arch/arm64/configs/chiron_defconfig
 
-      - name: Compile Kernel
+      - name: Build kernel
         run: |
           export ARCH=arm64
-          export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          
-          # 彻底清理环境
-          make clean && make mrproper
-          # 加载 MIX2 配置
+          make clean
           make chiron_defconfig
-          # 开始编译 (限制线程数防止 OOM，适配 GitHub 服务器)
-          make -j$(nproc --ignore=2) Image.gz-dtb
+          make -j$(nproc) Image.gz-dtb
 
-          # 关键校验：确保产物生成
-          if [ ! -f "arch/arm64/boot/Image.gz-dtb" ]; then
-            echo "❌ Compilation Failed: Image.gz-dtb not found!"
-            exit 1
-          fi
-          echo "✅ Kernel Compiled Successfully!"
-
-      - name: Pack with AnyKernel3 (chiron)
+      - name: Pack with AnyKernel3
         run: |
-          # 拉取 MIX2 专用打包模板
           git clone https://github.com/osm0sis/AnyKernel3 -b chiron --depth=1
-          # 复制内核镜像
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/zImage
-          # 打包为可刷入 ZIP
-          cd AnyKernel3 && zip -r9 ../MIX2-Kernel-Folk-${{ inputs.suffix }}.zip .
+          cd AnyKernel3
+          zip -r9 ../MIX2-Kernel-FolkPatch-${{ inputs.suffix }}.zip .
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v3
         with:
-          name: MIX2-Folk-KPM-SUSFS-${{ inputs.suffix }}
-          path: "MIX2-Kernel-Folk-*.zip"
-
+          name: MIX2-FolkPatch-KPM-SUSFS-${{ inputs.suffix }}
+          path: "MIX2-Kernel-FolkPatch-*.zip"
