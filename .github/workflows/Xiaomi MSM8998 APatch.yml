@@ -1,0 +1,73 @@
+name: Build MIX2 4.4 Kernel - APatch Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      suffix:
+        description: '版本后缀 (如: v1.0-stable)'
+        required: true
+        default: 'mix2-apatch'
+
+jobs:
+  build:
+    # 4.4内核推荐使用20.04，兼容性远高于22.04
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Dependencies (4.4 Kernel)
+        run: |
+          sudo apt update -y
+          sudo apt install -y bc bison flex libssl-dev make gcc-aarch64-linux-gnu zip git
+
+      - name: Integrate Official APatch
+        run: |
+          # 拉取 APatch 官方仓库
+          git clone https://github.com/bmax120/APatch --depth=1
+          
+          # 复制核心代码到内核目录
+          cp -r APatch/kernel_apatch include/
+          cp -r APatch/drivers/apatch drivers/
+          
+          # 写入 4.4 内核兼容的配置项
+          echo "CONFIG_APATCH=y" >> arch/arm64/configs/chiron_defconfig
+          # 关闭调试以保证稳定性
+          echo "CONFIG_APATCH_DEBUG=n" >> arch/arm64/configs/chiron_defconfig
+
+      - name: Compile Kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          # 彻底清理旧编译产物
+          make clean && make mrproper
+          # 加载 MIX2 官方配置
+          make chiron_defconfig
+          # 开始编译（指定产物为 Image.gz-dtb）
+          make -j$(nproc) Image.gz-dtb
+
+          # 校验编译结果
+          if [ ! -f "arch/arm64/boot/Image.gz-dtb" ]; then
+            echo "编译失败：未生成 Image.gz-dtb"
+            exit 1
+          fi
+
+      - name: Pack with AnyKernel3 (chiron)
+        run: |
+          # 拉取 MIX2 专用打包模板
+          git clone https://github.com/osm0sis/AnyKernel3 -b chiron --depth=1
+          # 复制内核镜像（AK3 要求命名为 zImage）
+          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/zImage
+          # 打包为可刷入 ZIP
+          cd AnyKernel3 && zip -r9 ../MIX2-Kernel-APatch-${{ inputs.suffix }}.zip .
+
+      - name: Upload Final Zip
+        uses: actions/upload-artifact@v3
+        with:
+          name: MIX2-APatch-Kernel-${{ inputs.suffix }}
+          path: "MIX2-Kernel-APatch-*.zip"
+
