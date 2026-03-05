@@ -4,30 +4,29 @@ on:
   workflow_dispatch:
     inputs:
       suffix:
-        description: '版本后缀 (如: v1.0-forkpatch)'
+        description: '版本后缀'
         required: true
-        default: 'mix2-forkpatch'
+        default: 'mix2-folkpatch'
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04
     steps:
-      - name: Checkout kernel source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Install dependencies
         run: |
-          sudo apt update
+          sudo apt update -y
           sudo apt install -y bc bison flex libssl-dev make gcc-aarch64-linux-gnu zip git
 
-      - name: Integrate ForkPatch (only)
+      - name: Integrate FolkPatch
         run: |
-          git clone https://github.com/0x7f9fa/ForkPatch --depth=1
-          mkdir -p drivers/forkpatch
-          cp -r ForkPatch/kernel/ForkPatch/* drivers/forkpatch/
-          echo "CONFIG_FORKPATCH=y" >> arch/arm64/configs/chiron_defconfig
+          git clone https://github.com/matsuzaka-yuki/FolkPatch --depth=1
+          cp -r FolkPatch/kernel_apatch include/
+          cp -r FolkPatch/drivers/apatch drivers/
+          echo "CONFIG_APATCH=y" >> arch/arm64/configs/chiron_defconfig
 
       - name: Build kernel
         run: |
@@ -42,11 +41,11 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3 -b chiron --depth=1
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/zImage
           cd AnyKernel3
-          zip -r9 ../MIX2-Kernel-ForkPatch-${{ inputs.suffix }}.zip .
+          zip -r9 ../MIX2-Kernel-FolkPatch-${{ inputs.suffix }}.zip .
 
-      - name: Upload zip
+      - name: Upload
         uses: actions/upload-artifact@v3
         with:
-          name: MIX2-Kernel-ForkPatch-${{ inputs.suffix }}
-          path: "MIX2-Kernel-ForkPatch-*.zip"
+          name: MIX2-FolkPatch-${{ inputs.suffix }}
+          path: "MIX2-Kernel-FolkPatch-*.zip"
 
