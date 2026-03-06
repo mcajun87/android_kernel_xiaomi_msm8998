@@ -1,45 +1,95 @@
-name: MIX 2 (chiron) 4.4 Kernel
+name: Build chiron Kernel (LineageOS 23.2 & APatch Ready)
 
 on:
   workflow_dispatch:
     inputs:
-      suffix:
-        description: '版本后缀'
-        required: true
-        default: 'mix2-stock'
+      defconfig:
+        description: '内核配置文件'
+        default: 'msm-perf_defconfig'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - name: 📦 检出源码
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Install dependencies
+      - name: 🛠️ 安装依赖
         run: |
           sudo apt update -y
-          sudo apt install -y bc bison flex libssl-dev make gcc-aarch64-linux-gnu zip git clang lld
+          sudo apt install -y bc bison flex libssl-dev libelf-dev \
+          make gcc-aarch64-linux-gnu git wget libncurses5-dev \
+          libncursesw5-dev xz-utils liblz4-tool
 
-      - name: Build kernel (ONLY for MIX2 chiron)
+      - name: 📥 下载并配置 Clang 18
         run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CC=clang
-          export LD=ld.lld
+          wget -qO- https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz | tar -xJf -
+          mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04 clang-18
+          echo "PATH=$PWD/clang-18/bin:$PATH" >> $GITHUB_ENV
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
 
-          make vendor/xiaomi/chiron.config
-          make -j$(nproc) Image.gz-dtb
-
-      - name: Pack with AnyKernel3
+      - name: 📥 下载并编译 mkbootimg
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3 --depth=1
-          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cd AnyKernel3
-          zip -r9 ../MIX2-Kernel-${{ inputs.suffix }}.zip .
+          git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
+          cd mkbootimg
+          make
+          sudo cp mkbootimg /usr/local/bin/
+          cd .. && rm -rf mkbootimg
 
-      - name: Upload artifact
+      - name: 📥 下载 LineageOS ramdisk
+        run: |
+          # 从你解包的 LineageOS boot.img 中提取 ramdisk.cpio
+          # 这里假设你已经将其上传到了某个可下载的地址
+          # 请替换为你自己的下载链接
+          wget -O ramdisk.cpio "https://your-domain.com/ramdisk.cpio"
+
+      - name: ⚙️ 配置并编译内核
+        run: |
+          # 1. 先加载默认配置
+          make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
+          
+          # 2. 【关键】强制开启 APatch 所需的选项
+          scripts/config --file out/.config -e CONFIG_KALLSYMS
+          scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
+          scripts/config --file out/.config -e CONFIG_MODULES
+          scripts/config --file out/.config -e CONFIG_MODULE_SIG_FORCE
+          scripts/config --file out/.config -e CONFIG_FTRACE
+          scripts/config --file out/.config -e CONFIG_KPROBES
+          scripts/config --file out/.config -e CONFIG_DEBUG_INFO
+          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
+          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF
+          
+          # 3. 编译内核和DTB
+          make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image.gz dtbs
+
+      - name: 📦 打包 boot.img (使用 LineageOS 23.2 参数)
+        run: |
+          # 1. 打包 dtb.img (APatch 兼容性关键)
+          $GITHUB_WORKSPACE/mkbootimg/mkdtimg create out/arch/arm64/boot/dtb.img out/arch/arm64/boot/dts/qcom/*.dtb
+          
+          # 2. 打包 boot.img
+          # 使用你提供的 LineageOS 23.2 参数
+          mkbootimg \
+            --kernel out/arch/arm64/boot/Image.gz \
+            --dtb out/arch/arm64/boot/dtb.img \
+            --ramdisk ./ramdisk.cpio \
+            --cmdline "androidboot.console=ttyMSM0 androidboot.hardware=qcom androidboot.boot_devices=soc/1da4000.ufshc msm_rtb.filter=0x37 ehci-hcd.park=3 service_locator.enable=1 swiotlb=2048 loop.max_part=7" \
+            --base 0x00000000 \
+            --pagesize 4096 \
+            --ramdisk_offset 0x01000000 \
+            --tags_offset 0x00000100 \
+            --kernel_offset 0x00008000 \
+            --os_version 16.0.0 \
+            --os_patch_level 2026-02 \
+            --header_version 2 \
+            --board chiron \
+            -o out/arch/arm64/boot/boot.img
+
+      - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: MIX2-Kernel-${{ inputs.suffix }}
-          path: "MIX2-Kernel-*.zip"
+          name: chiron-lineage23.2-apatch-boot.img
+          path: out/arch/arm64/boot/boot.img
