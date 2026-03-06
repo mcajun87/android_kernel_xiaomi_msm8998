@@ -28,7 +28,7 @@ jobs:
           export CC=clang
           export LD=ld.lld
 
-          make vendor/xiaomi/chiron_defconfig
+          make vendor/xiaomi/chiron.config
           make -j$(nproc) Image.gz-dtb
 
       - name: Pack with AnyKernel3
