@@ -45,7 +45,7 @@ jobs:
           # 从你解包的 LineageOS boot.img 中提取 ramdisk.cpio
           # 这里假设你已经将其上传到了某个可下载的地址
           # 请替换为你自己的下载链接
-          wget -O ramdisk.cpio "https://your-domain.com/ramdisk.cpio"
+          wget -O ramdisk.cpio "https://github.com/mcajun87/android_kernel_xiaomi_msm8998/blob/lineage-23.2/.github/ramdisk.cpio"
 
       - name: ⚙️ 配置并编译内核
         run: |
