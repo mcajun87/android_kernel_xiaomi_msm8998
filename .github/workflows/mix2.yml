@@ -50,8 +50,8 @@ jobs:
 
       - name: ⚙️ 配置并编译内核
         run: |
-          # 1. 先加载默认配置
-          make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
+          # 1. 先加载默认配置，使用系统默认编译器
+          make O=out ARCH=arm64 HOSTCC=gcc ${{ github.event.inputs.defconfig }}
           
           # 2. 【关键】强制开启 APatch 所需的选项
           scripts/config --file out/.config -e CONFIG_KALLSYMS
@@ -64,7 +64,10 @@ jobs:
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF
           
-          # 3. 编译内核和DTB
+          # 3. 运行 silentoldconfig，同样使用系统默认编译器
+          make O=out ARCH=arm64 HOSTCC=gcc silentoldconfig
+          
+          # 4. 编译内核和DTB，恢复使用 Clang 和交叉编译
           make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image.gz dtbs
 
       - name: 📦 打包 boot.img (使用 LineageOS 23.2 参数)
