@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,25 +19,27 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update -y
-          sudo apt install -y bc bison flex libssl-dev make gcc-aarch64-linux-gnu zip git
+          sudo apt install -y bc bison flex libssl-dev make gcc-aarch64-linux-gnu zip git clang lld
 
       - name: Build kernel (ONLY for MIX2 chiron)
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          make clean
+          export CC=clang
+          export LD=ld.lld
+
           make vendor/xiaomi/chiron_defconfig
           make -j$(nproc) Image.gz-dtb
 
-      - name: Pack with AnyKernel3 (ONLY for MIX2 chiron)
+      - name: Pack with AnyKernel3
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3 -b chiron --depth=1
-          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/zImage
+          git clone https://github.com/osm0sis/AnyKernel3 --depth=1
+          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
-          zip -r9 ../MIX2-Kernel-Stock-${{ inputs.suffix }}.zip .
+          zip -r9 ../MIX2-Kernel-${{ inputs.suffix }}.zip .
 
-      - name: Upload
-        uses: actions/upload-artifact@v3
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: MIX2-Stock-${{ inputs.suffix }}
-          path: "MIX2-Kernel-Stock-*.zip"
+          name: MIX2-Kernel-${{ inputs.suffix }}
+          path: "MIX2-Kernel-*.zip"
