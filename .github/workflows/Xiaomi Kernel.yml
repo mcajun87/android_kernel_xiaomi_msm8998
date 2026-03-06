@@ -36,7 +36,8 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
           cd mkbootimg
-          make
+          # 强制使用系统默认的原生编译器，而不是交叉编译器
+          make CC=gcc
           sudo cp mkbootimg /usr/local/bin/
           cd .. && rm -rf mkbootimg
 
