@@ -14,7 +14,7 @@ jobs:
       - name: 📦 检出源码
         uses: actions/checkout@v4
         with:
-          fetch-depth:1
+          fetch-depth: 1
 
       - name: 🛠️ 安装依赖
         run: |
@@ -42,10 +42,8 @@ jobs:
 
       - name: 📥 下载 LineageOS ramdisk
         run: |
-          # 从你解包的 LineageOS boot.img 中提取 ramdisk.cpio
-          # 这里假设你已经将其上传到了某个可下载的地址
-          # 请替换为你自己的下载链接
-          wget -O ramdisk.cpio "https://github.com/mcajun87/android_kernel_xiaomi_msm8998/blob/lineage-23.2/.github/ramdisk.cpio"
+          # 修正为 raw 下载链接，避免下载到 HTML 页面
+          wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
       - name: ⚙️ 配置并编译内核
         run: |
@@ -69,11 +67,9 @@ jobs:
       - name: 📦 打包 boot.img (使用 LineageOS 23.2 参数)
         run: |
           # 1. 打包 dtb.img (APatch 兼容性关键)
-          # 修正路径：mkdtimg 已安装到 /usr/local/bin，直接调用
           mkdtimg create out/arch/arm64/boot/dtb.img out/arch/arm64/boot/dts/qcom/*.dtb
           
           # 2. 打包 boot.img
-          # 使用你提供的 LineageOS 23.2 参数
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
