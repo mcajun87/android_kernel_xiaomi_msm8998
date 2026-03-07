@@ -1,4 +1,4 @@
-name: Build chiron Kernel (LineageOS 23.2 & APatch Ready)
+name: chiron Kernel (LineageOS 23.2 & APatch Ready)
 
 on:
   workflow_dispatch:
