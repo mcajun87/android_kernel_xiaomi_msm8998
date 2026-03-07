@@ -1,4 +1,4 @@
-name: Build chiron Kernel (LineageOS 23.2 & APatch Ready) - Clang 14
+name: Build chiron Kernel (LineageOS 23.2 & APatch Ready) - GCC Final v2
 
 on:
   workflow_dispatch:
@@ -16,21 +16,14 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: 🛠️ 安装依赖
+      - name: 🛠️ 安装依赖（GCC 12 + 额外工具）
         run: |
           sudo apt update -y
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
-          make gcc-aarch64-linux-gnu git wget libncurses5-dev \
-          libncursesw5-dev xz-utils liblz4-tool libtinfo5
-
-      - name: 📥 下载并配置 Clang 14（更稳定的版本）
-        run: |
-          wget -qO- https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.6/clang+llvm-14.0.6-x86_64-linux-gnu-ubuntu-18.04.tar.xz | tar -xJf -
-          mv clang+llvm-14.0.6-x86_64-linux-gnu-ubuntu-18.04 clang-14
-          echo "PATH=$PWD/clang-14/bin:$PATH" >> $GITHUB_ENV
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$PWD/clang-14/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
+          libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
+          device-tree-compiler
+          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
 
       - name: 📥 下载并编译 mkbootimg
         run: |
@@ -44,12 +37,15 @@ jobs:
         run: |
           wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
-      - name: ⚙️ 配置并编译内核（方案二：Clang 14 + 保留 BTF）
+      - name: ⚙️ 配置并编译内核（保留 BPF）
         run: |
-          # 1. 加载默认配置
-          make O=out ARCH=arm64 HOSTCC=gcc ${{ github.event.inputs.defconfig }}
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 2. 配置 APatch 选项（保留所有选项，包括 BTF）
+          # 1. 加载默认配置
+          make O=out ${{ github.event.inputs.defconfig }}
+          
+          # 2. 强制开启 APatch 所需选项（保留 BPF）
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
@@ -58,23 +54,39 @@ jobs:
           scripts/config --file out/.config -e CONFIG_KPROBES
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF  # 保留，因为 Clang 14 兼容性更好
+          
+          # 🔧 尝试修复 BPF 问题：使用旧版 DWARF
+          scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
+          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_REDUCED
           
           # 3. 自动处理配置
-          make O=out ARCH=arm64 HOSTCC=gcc olddefconfig
+          make O=out olddefconfig
           
-          # 4. 显示编译器版本和配置
-          echo "🔍 Clang 版本:"
-          clang --version | head -1
-          echo "🔍 BPF 配置状态:"
-          grep -E "CONFIG_BPF|CONFIG_DEBUG_INFO_BTF" out/.config || echo "未找到相关配置"
+          # 4. 显示编译器信息
+          echo "🔍 GCC 版本:"
+          aarch64-linux-gnu-gcc --version | head -2
           
-          # 5. 编译内核
-          make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image.gz dtbs
+          # 5. 编译内核（单线程，便于观察错误）
+          make O=out -j1 Image.gz dtbs 2>&1 | tee build.log
+
+      - name: 📦 检查编译错误
+        if: failure()
+        run: |
+          echo "🔍 检查 BPF 相关错误:"
+          grep -A 10 -B 10 "bpf" build.log || echo "未找到 BPF 错误"
+          echo "🔍 最后的编译日志:"
+          tail -50 build.log
+
+      - name: 📦 打包 dtb.img
+        run: |
+          # 使用 dtc 手动打包 DTB
+          mkdir -p out/arch/arm64/boot/dtb
+          for dtb in out/arch/arm64/boot/dts/qcom/*.dtb; do
+            cat "$dtb" >> out/arch/arm64/boot/dtb.img
+          done
 
       - name: 📦 打包 boot.img
         run: |
-          mkdtimg create out/arch/arm64/boot/dtb.img out/arch/arm64/boot/dts/qcom/*.dtb
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
@@ -94,5 +106,7 @@ jobs:
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: chiron-lineage23.2-apatch-clang14-boot.img
-          path: out/arch/arm64/boot/boot.img
+          name: chiron-lineage23.2-gcc-withbpf
+          path: |
+            out/arch/arm64/boot/boot.img
+            build.log
