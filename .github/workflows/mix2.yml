@@ -62,12 +62,20 @@ jobs:
           scripts/config --file out/.config -e CONFIG_KPROBES
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF
+          # 🔧 修复: 注释掉引起 BPF 编译错误的 CONFIG_DEBUG_INFO_BTF
+          # 这个选项在 4.4 内核中与 Clang 18 不兼容
+          # scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF
           
           # 3. 使用 olddefconfig 自动处理所有配置，无需交互
           make O=out ARCH=arm64 HOSTCC=gcc olddefconfig
           
-          # 4. 编译内核和DTB
+          # 4. 显示内核版本和配置信息（用于调试）
+          echo "🔍 内核版本信息:"
+          head -5 Makefile | grep -E "VERSION|PATCHLEVEL"
+          echo "🔍 BPF 相关配置状态:"
+          grep -E "CONFIG_BPF|CONFIG_DEBUG_INFO" out/.config || echo "未找到相关配置"
+          
+          # 5. 编译内核和DTB
           make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image.gz dtbs
 
       - name: 📦 打包 boot.img (使用 LineageOS 23.2 参数)
