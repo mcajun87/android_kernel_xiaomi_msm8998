@@ -1,4 +1,4 @@
-name: chiron Kernel (LineageOS 23.2 & APatch Ready)
+name: Build chiron Kernel (LineageOS 23.2 & APatch Ready) - GCC Final v1
 
 on:
   workflow_dispatch:
@@ -16,21 +16,13 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: 🛠️ 安装依赖
+      - name: 🛠️ 安装依赖（GCC 12）
         run: |
           sudo apt update -y
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
-          make gcc-aarch64-linux-gnu git wget libncurses5-dev \
-          libncursesw5-dev xz-utils liblz4-tool libtinfo5
-
-      - name: 📥 下载并配置 Clang 18
-        run: |
-          wget -qO- https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz | tar -xJf -
-          mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04 clang-18
-          echo "PATH=$PWD/clang-18/bin:$PATH" >> $GITHUB_ENV
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$PWD/clang-18/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
+          libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio
+          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
 
       - name: 📥 下载并编译 mkbootimg
         run: |
@@ -40,16 +32,25 @@ jobs:
           sudo cp mkbootimg /usr/local/bin/
           cd .. && rm -rf mkbootimg
 
+      - name: 📥 下载 mkdtimg 工具
+        run: |
+          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt
+          sudo cp libufdt/mkdtimg /usr/local/bin/
+          sudo chmod +x /usr/local/bin/mkdtimg
+
       - name: 📥 下载 LineageOS ramdisk
         run: |
           wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
-      - name: ⚙️ 配置并编译内核（方案一：完全禁用BPF）
+      - name: ⚙️ 配置并编译内核（禁用 BPF）
         run: |
-          # 1. 加载默认配置
-          make O=out ARCH=arm64 HOSTCC=gcc ${{ github.event.inputs.defconfig }}
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 2. 配置 APatch 选项，并完全禁用 BPF
+          # 1. 加载默认配置
+          make O=out ${{ github.event.inputs.defconfig }}
+          
+          # 2. 强制开启 APatch 所需选项
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
@@ -59,24 +60,27 @@ jobs:
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
           
-          # 🔧 完全禁用 BPF 相关选项
+          # 🔧 完全禁用 BPF
           scripts/config --file out/.config -d CONFIG_BPF
           scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
           
           # 3. 自动处理配置
-          make O=out ARCH=arm64 HOSTCC=gcc olddefconfig
+          make O=out olddefconfig
           
-          # 4. 验证 BPF 已被禁用
-          echo "🔍 BPF 配置状态验证:"
-          grep -E "CONFIG_BPF|CONFIG_DEBUG_INFO_BTF" out/.config || echo "✅ BPF 已成功禁用"
+          # 4. 显示配置状态
+          echo "🔍 BPF 配置状态:"
+          grep -E "CONFIG_BPF|CONFIG_DEBUG_INFO_BTF" out/.config || echo "✅ BPF 已禁用"
           
           # 5. 编译内核
-          make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image.gz dtbs
+          make O=out -j$(nproc) Image.gz dtbs
 
       - name: 📦 打包 boot.img
         run: |
+          # 创建 dtb.img
           mkdtimg create out/arch/arm64/boot/dtb.img out/arch/arm64/boot/dts/qcom/*.dtb
+          
+          # 创建 boot.img
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
@@ -96,5 +100,5 @@ jobs:
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: chiron-lineage23.2-apatch-boot.img
+          name: chiron-lineage23.2-gcc-nobpf
           path: out/arch/arm64/boot/boot.img
