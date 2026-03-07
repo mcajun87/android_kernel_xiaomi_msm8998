@@ -1,4 +1,4 @@
-name: Build chiron Kernel (LineageOS 23.2 & APatch Ready) - GCC Final v1
+name: Build chiron Kernel - GCC方案一
 
 on:
   workflow_dispatch:
@@ -16,12 +16,13 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: 🛠️ 安装依赖（GCC 12）
+      - name: 🛠️ 安装依赖
         run: |
           sudo apt update -y
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
           make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
-          libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio
+          libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
+          device-tree-compiler
           sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
 
       - name: 📥 下载并编译 mkbootimg
@@ -32,17 +33,11 @@ jobs:
           sudo cp mkbootimg /usr/local/bin/
           cd .. && rm -rf mkbootimg
 
-      - name: 📥 下载 mkdtimg 工具
-        run: |
-          git clone --depth=1 https://android.googlesource.com/platform/system/libufdt
-          sudo cp libufdt/mkdtimg /usr/local/bin/
-          sudo chmod +x /usr/local/bin/mkdtimg
-
       - name: 📥 下载 LineageOS ramdisk
         run: |
           wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
-      - name: ⚙️ 配置并编译内核（禁用 BPF）
+      - name: ⚙️ 配置内核
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -50,7 +45,7 @@ jobs:
           # 1. 加载默认配置
           make O=out ${{ github.event.inputs.defconfig }}
           
-          # 2. 强制开启 APatch 所需选项
+          # 2. 开启 APatch 所需选项（禁用有问题的 BTF）
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
@@ -59,28 +54,48 @@ jobs:
           scripts/config --file out/.config -e CONFIG_KPROBES
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
-          
-          # 🔧 完全禁用 BPF
-          scripts/config --file out/.config -d CONFIG_BPF
-          scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
           
           # 3. 自动处理配置
           make O=out olddefconfig
+
+      - name: ⚙️ 编译内核
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 4. 显示配置状态
-          echo "🔍 BPF 配置状态:"
-          grep -E "CONFIG_BPF|CONFIG_DEBUG_INFO_BTF" out/.config || echo "✅ BPF 已禁用"
-          
-          # 5. 编译内核
+          # 编译内核和DTB
           make O=out -j$(nproc) Image.gz dtbs
+          
+          # 检查编译结果
+          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
+            echo "❌ 内核编译失败"
+            exit 1
+          fi
+          
+          echo "✅ 内核编译成功"
+          ls -la out/arch/arm64/boot/Image.gz
+
+      - name: 📦 检查 DTB 文件
+        run: |
+          echo "🔍 查找 DTB 文件:"
+          find out -name "*.dtb" -type f | sort
+          
+          DTB_COUNT=$(find out -name "*.dtb" -type f | wc -l)
+          if [ "$DTB_COUNT" -eq 0 ]; then
+            echo "❌ 没有找到 DTB 文件"
+            exit 1
+          fi
+          echo "✅ 找到 $DTB_COUNT 个 DTB 文件"
+
+      - name: 📦 打包 dtb.img
+        run: |
+          # 创建 dtb.img
+          find out/arch/arm64/boot -name "*.dtb" -type f -exec cat {} \; > out/arch/arm64/boot/dtb.img
+          echo "✅ dtb.img 创建成功，大小: $(wc -c < out/arch/arm64/boot/dtb.img) 字节"
 
       - name: 📦 打包 boot.img
         run: |
-          # 创建 dtb.img
-          mkdtimg create out/arch/arm64/boot/dtb.img out/arch/arm64/boot/dts/qcom/*.dtb
-          
-          # 创建 boot.img
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
@@ -96,9 +111,11 @@ jobs:
             --header_version 2 \
             --board chiron \
             -o out/arch/arm64/boot/boot.img
+          
+          echo "✅ boot.img 创建成功，大小: $(wc -c < out/arch/arm64/boot/boot.img) 字节"
 
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: chiron-lineage23.2-gcc-nobpf
+          name: chiron-boot-img
           path: out/arch/arm64/boot/boot.img
