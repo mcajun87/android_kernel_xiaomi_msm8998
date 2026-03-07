@@ -1,0 +1,100 @@
+name: Build chiron Kernel - Ubuntu 18.04
+
+on:
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: '内核配置文件'
+        default: 'vendor/xiaomi/chiron.config'
+
+jobs:
+  build:
+    runs-on: ubuntu-18.04
+    steps:
+      - name: 📦 检出源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 🛠️ 安装依赖
+        run: |
+          sudo apt update -y
+          sudo apt install -y bc bison flex libssl-dev libelf-dev \
+          make gcc-aarch64-linux-gnu git wget libncurses5-dev \
+          libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
+          device-tree-compiler
+          
+      - name: 📥 下载 mkbootimg
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
+          cd mkbootimg
+          make CC=gcc
+          sudo cp mkbootimg /usr/local/bin/
+          cd .. && rm -rf mkbootimg
+
+      - name: 📥 下载 LineageOS ramdisk
+        run: |
+          wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
+
+      - name: ⚙️ 配置内核
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          make O=out ${{ github.event.inputs.defconfig }}
+          
+          scripts/config --file out/.config --set-val NR_CPUS 8
+          scripts/config --file out/.config -e CONFIG_KALLSYMS
+          scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
+          scripts/config --file out/.config -e CONFIG_MODULES
+          scripts/config --file out/.config -e CONFIG_I2C
+          scripts/config --file out/.config -e CONFIG_PINCTRL
+          scripts/config --file out/.config -d CONFIG_BPF
+          scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
+          scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
+          
+          make O=out olddefconfig
+
+      - name: ⚙️ 编译内核
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          make O=out -j$(nproc) dtbs
+          make O=out -j$(nproc) Image
+          
+          if [ -f out/arch/arm64/boot/Image ]; then
+            gzip -9 -c out/arch/arm64/boot/Image > out/arch/arm64/boot/Image.gz
+            echo "✅ 内核编译成功"
+          else
+            echo "❌ 内核编译失败"
+            exit 1
+          fi
+
+      - name: 📦 打包 boot.img
+        run: |
+          find out/arch/arm64/boot -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
+          
+          mkbootimg \
+            --kernel out/arch/arm64/boot/Image.gz \
+            --dtb out/arch/arm64/boot/dtb.img \
+            --ramdisk ./ramdisk.cpio \
+            --cmdline "androidboot.console=ttyMSM0 androidboot.hardware=qcom androidboot.boot_devices=soc/1da4000.ufshc msm_rtb.filter=0x37 ehci-hcd.park=3 service_locator.enable=1 swiotlb=2048 loop.max_part=7" \
+            --base 0x00000000 \
+            --pagesize 4096 \
+            --ramdisk_offset 0x01000000 \
+            --tags_offset 0x00000100 \
+            --kernel_offset 0x00008000 \
+            --os_version 16.0.0 \
+            --os_patch_level 2026-02 \
+            --header_version 2 \
+            --board chiron \
+            -o boot.img
+          
+          echo "✅ boot.img 创建成功"
+
+      - name: 📤 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: chiron-boot-1804
+          path: boot.img
