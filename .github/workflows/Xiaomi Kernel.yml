@@ -1,11 +1,11 @@
-name: Build chiron Kernel - GCC方案二（调试模式）
+name: Build chiron Kernel - 修复版
 
 on:
   workflow_dispatch:
     inputs:
       defconfig:
         description: '内核配置文件'
-        default: 'msm-perf_defconfig'
+        default: 'vendor/xiaomi/chiron.config'
 
 jobs:
   build:
@@ -22,7 +22,7 @@ jobs:
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
           make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
           libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
-          device-tree-compiler tree
+          device-tree-compiler
           sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
 
       - name: 📥 下载 mkbootimg
@@ -37,97 +37,90 @@ jobs:
         run: |
           wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
-      - name: 🔍 查看内核配置
-        run: |
-          echo "内核版本信息:"
-          head -10 Makefile
-          echo ""
-          echo "可用的配置文件:"
-          find arch/arm64/configs -name "*.config" -o -name "*defconfig*" | sort
-
-      - name: ⚙️ 配置内核（记录详细日志）
+      - name: ⚙️ 配置内核
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 1. 加载配置
-          echo "加载配置: ${{ github.event.inputs.defconfig }}"
-          make O=out ${{ github.event.inputs.defconfig }} 2>&1 | tee config.log
+          # 加载配置
+          make O=out ${{ github.event.inputs.defconfig }}
           
-          # 2. 修改配置
+          # 开启 APatch 选项
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
-          scripts/config --file out/.config -e CONFIG_MODULE_SIG_FORCE
-          scripts/config --file out/.config -e CONFIG_FTRACE
-          scripts/config --file out/.config -e CONFIG_KPROBES
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
+          
+          # 禁用 BPF
+          scripts/config --file out/.config -d CONFIG_BPF
+          scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
           
-          # 3. 最终配置
+          # 自动处理
           make O=out olddefconfig
-          
-          # 4. 显示关键配置
-          echo "关键配置状态:"
-          grep -E "CONFIG_(KALLSYMS|MODULES|DEBUG_INFO|BPF)" out/.config
 
-      - name: ⚙️ 编译内核（单线程，便于调试）
+      - name: ⚙️ 编译内核和模块
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 先编译 DTB
-          echo "编译 DTB..."
-          make O=out -j1 dtbs 2>&1 | tee dtbs.log
+          # 编译内核镜像
+          make O=out -j$(nproc) Image
           
-          # 再编译内核
-          echo "编译内核..."
-          make O=out -j1 Image.gz 2>&1 | tee kernel.log
+          # 如果 Image 存在，压缩它
+          if [ -f out/arch/arm64/boot/Image ]; then
+            gzip -9 -c out/arch/arm64/boot/Image > out/arch/arm64/boot/Image.gz
+            echo "✅ Image.gz 创建成功"
+          else
+            echo "❌ Image 未生成"
+            # 尝试直接编译 Image.gz
+            make O=out -j$(nproc) Image.gz
+          fi
           
-          # 检查结果
-          echo "编译结果:"
-          ls -la out/arch/arm64/boot/
+          # 编译 DTB
+          make O=out -j$(nproc) dtbs
 
-      - name: 📦 收集 DTB 文件
+      - name: 📦 检查编译产物
         run: |
-          echo "查找所有 DTB 文件:"
-          find out -name "*.dtb" -type f | tee dtb-list.txt
+          echo "=== 检查内核镜像 ==="
+          ls -la out/arch/arm64/boot/Image* || echo "内核镜像不存在"
           
-          DTB_COUNT=$(cat dtb-list.txt | wc -l)
-          if [ "$DTB_COUNT" -eq 0 ]; then
-            echo "❌ 没有找到 DTB 文件"
-            echo "检查 DTS 编译日志:"
-            cat dtbs.log | grep -i error -A 5 -B 5 || echo "没有发现错误"
+          echo "=== 检查 DTB 文件 ==="
+          find out -name "*.dtb" | head -20 || echo "DTB 文件不存在"
+          
+          # 如果内核不存在，显示最后100行日志
+          if [ ! -f out/arch/arm64/boot/Image.gz ] && [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "=== 最后100行编译日志 ==="
+            tail -100 nohup.out 2>/dev/null || tail -100 build.log 2>/dev/null || echo "无日志"
             exit 1
           fi
-          
-          echo "✅ 找到 $DTB_COUNT 个 DTB 文件"
-          cat dtb-list.txt
 
-      - name: 📦 创建 dtb.img
+      - name: 📦 打包 dtb.img
+        if: success()
         run: |
-          if [ -f out/arch/arm64/boot/dtb.img ]; then
-            rm out/arch/arm64/boot/dtb.img
+          DTB_FILES=$(find out -name "*.dtb" -type f)
+          if [ -n "$DTB_FILES" ]; then
+            cat $DTB_FILES > out/arch/arm64/boot/dtb.img
+            echo "dtb.img 大小: $(wc -c < out/arch/arm64/boot/dtb.img) 字节"
+          else
+            echo "❌ 没有 DTB 文件"
+            exit 1
           fi
-          
-          # 方法1: 尝试使用 cat
-          find out -name "*.dtb" -type f -exec cat {} \; > out/arch/arm64/boot/dtb.img
-          echo "方法1完成，大小: $(wc -c < out/arch/arm64/boot/dtb.img) 字节"
-          
-          # 验证
-          file out/arch/arm64/boot/dtb.img
 
       - name: 📦 打包 boot.img
         if: success()
         run: |
-          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
-            echo "❌ 内核镜像不存在"
+          KERNEL=""
+          if [ -f out/arch/arm64/boot/Image.gz ]; then
+            KERNEL="out/arch/arm64/boot/Image.gz"
+          elif [ -f out/arch/arm64/boot/Image ]; then
+            KERNEL="out/arch/arm64/boot/Image"
+          else
+            echo "❌ 没有内核镜像"
             exit 1
           fi
           
           mkbootimg \
-            --kernel out/arch/arm64/boot/Image.gz \
+            --kernel $KERNEL \
             --dtb out/arch/arm64/boot/dtb.img \
             --ramdisk ./ramdisk.cpio \
             --cmdline "androidboot.console=ttyMSM0 androidboot.hardware=qcom androidboot.boot_devices=soc/1da4000.ufshc msm_rtb.filter=0x37 ehci-hcd.park=3 service_locator.enable=1 swiotlb=2048 loop.max_part=7" \
@@ -148,6 +141,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-results
+          name: build-output
           path: |
-            out/arch/arm64/b
+            out/arch/arm64/boot/boot.img
+            out/arch/arm64/boot/Image*
+            out/arch/arm64/boot/dtb.img
+            out/.config
