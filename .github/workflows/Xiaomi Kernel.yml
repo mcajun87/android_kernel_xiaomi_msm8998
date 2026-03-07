@@ -1,4 +1,4 @@
-name: chiron 终极修复版禁用
+name: Build chiron Kernel - Ubuntu 20.04
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04
     steps:
       - name: 📦 检出源码
         uses: actions/checkout@v4
@@ -20,11 +20,10 @@ jobs:
         run: |
           sudo apt update -y
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
-          make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
+          make gcc-aarch64-linux-gnu git wget libncurses5-dev \
           libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
           device-tree-compiler
-          sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
-
+          
       - name: 📥 下载 mkbootimg
         run: |
           git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
@@ -42,45 +41,30 @@ jobs:
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 1. 加载基础配置
           make O=out ${{ github.event.inputs.defconfig }}
           
-          # 2. 设置 NR_CPUS
           scripts/config --file out/.config --set-val NR_CPUS 8
-          
-          # 3. 开启 APatch 必需选项
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
-          
-          # 4. 🔥 禁用所有有问题的传感器驱动
-          scripts/config --file out/.config -d CONFIG_BMI160
-          scripts/config --file out/.config -d CONFIG_SENSORS_BMI160
-          scripts/config --file out/.config -d CONFIG_INPUT_BMI160
-          scripts/config --file out/.config -d CONFIG_SPK_ID
-          scripts/config --file out/.config -d CONFIG_MFD_SPK_ID
-          
-          # 5. 禁用所有可能出问题的选项
+          scripts/config --file out/.config -e CONFIG_I2C
+          scripts/config --file out/.config -e CONFIG_PINCTRL
           scripts/config --file out/.config -d CONFIG_BPF
           scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
-          scripts/config --file out/.config -d CONFIG_KPROBES
+          scripts/config --file out/.config -d CONFIG_WERROR
           
-          # 6. 自动处理
           make O=out olddefconfig
 
       - name: ⚙️ 编译内核
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
+          export KCFLAGS="-Wno-error"
           
-          # 编译 DTB
           make O=out -j$(nproc) dtbs
-          
-          # 编译内核
           make O=out -j$(nproc) Image
           
-          # 检查结果
           if [ -f out/arch/arm64/boot/Image ]; then
             gzip -9 -c out/arch/arm64/boot/Image > out/arch/arm64/boot/Image.gz
             echo "✅ 内核编译成功"
@@ -91,10 +75,8 @@ jobs:
 
       - name: 📦 打包 boot.img
         run: |
-          # 创建 dtb.img
           find out/arch/arm64/boot -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
           
-          # 创建 boot.img
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
@@ -116,5 +98,5 @@ jobs:
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: chiron-boot
+          name: chiron-boot-2004
           path: boot.img
