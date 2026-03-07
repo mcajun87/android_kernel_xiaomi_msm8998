@@ -1,11 +1,11 @@
-name: Build chiron Kernel - GCC方案一
+name: Build chiron Kernel - 诊断模式
 
 on:
   workflow_dispatch:
     inputs:
       defconfig:
         description: '内核配置文件'
-        default: 'msm-perf_defconfig'
+        default: 'vendor/xiaomi/chiron.config'
 
 jobs:
   build:
@@ -22,10 +22,10 @@ jobs:
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
           make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
           libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
-          device-tree-compiler
+          device-tree-compiler tree
           sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
 
-      - name: 📥 下载并编译 mkbootimg
+      - name: 📥 下载 mkbootimg
         run: |
           git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
           cd mkbootimg
@@ -37,85 +37,62 @@ jobs:
         run: |
           wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
+      - name: 🔍 查看内核版本和配置
+        run: |
+          echo "=== 内核版本 ==="
+          head -10 Makefile
+          echo ""
+          echo "=== 可用的配置文件 ==="
+          find arch/arm64/configs -type f | sort
+          echo ""
+          echo "=== 检查 chiron.config ==="
+          cat arch/arm64/configs/vendor/xiaomi/chiron.config || echo "chiron.config 不存在"
+
       - name: ⚙️ 配置内核
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 1. 加载默认配置
+          # 加载配置
+          echo "加载配置: ${{ github.event.inputs.defconfig }}"
           make O=out ${{ github.event.inputs.defconfig }}
           
-          # 2. 开启 APatch 所需选项（禁用有问题的 BTF）
+          # 开启基本选项
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
-          scripts/config --file out/.config -e CONFIG_MODULE_SIG_FORCE
-          scripts/config --file out/.config -e CONFIG_FTRACE
-          scripts/config --file out/.config -e CONFIG_KPROBES
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
+          
+          # 禁用有问题的选项
+          scripts/config --file out/.config -d CONFIG_BPF
+          scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
           
-          # 3. 自动处理配置
-          make O=out olddefconfig
+          # 显示最终配置
+          echo "=== 关键配置 ==="
+          grep -E "CONFIG_(KALLSYMS|MODULES|BPF|DEBUG_INFO)" out/.config || true
 
-      - name: ⚙️ 编译内核
+      - name: ⚙️ 编译内核（保存完整日志）
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 编译内核和DTB
-          make O=out -j$(nproc) Image.gz dtbs
+          # 编译并保存所有输出
+          make O=out -j$(nproc) 2>&1 | tee full-build.log
           
-          # 检查编译结果
-          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
-            echo "❌ 内核编译失败"
-            exit 1
-          fi
+          # 检查结果
+          echo "=== 编译结果 ==="
+          ls -la out/arch/arm64/boot/ || echo "boot目录不存在"
           
-          echo "✅ 内核编译成功"
-          ls -la out/arch/arm64/boot/Image.gz
+          # 查找错误
+          echo "=== 错误摘要 ==="
+          grep -i error full-build.log | tail -20 || echo "没有发现错误"
+          grep -i warning full-build.log | tail -20 || echo "没有发现警告"
 
-      - name: 📦 检查 DTB 文件
-        run: |
-          echo "🔍 查找 DTB 文件:"
-          find out -name "*.dtb" -type f | sort
-          
-          DTB_COUNT=$(find out -name "*.dtb" -type f | wc -l)
-          if [ "$DTB_COUNT" -eq 0 ]; then
-            echo "❌ 没有找到 DTB 文件"
-            exit 1
-          fi
-          echo "✅ 找到 $DTB_COUNT 个 DTB 文件"
-
-      - name: 📦 打包 dtb.img
-        run: |
-          # 创建 dtb.img
-          find out/arch/arm64/boot -name "*.dtb" -type f -exec cat {} \; > out/arch/arm64/boot/dtb.img
-          echo "✅ dtb.img 创建成功，大小: $(wc -c < out/arch/arm64/boot/dtb.img) 字节"
-
-      - name: 📦 打包 boot.img
-        run: |
-          mkbootimg \
-            --kernel out/arch/arm64/boot/Image.gz \
-            --dtb out/arch/arm64/boot/dtb.img \
-            --ramdisk ./ramdisk.cpio \
-            --cmdline "androidboot.console=ttyMSM0 androidboot.hardware=qcom androidboot.boot_devices=soc/1da4000.ufshc msm_rtb.filter=0x37 ehci-hcd.park=3 service_locator.enable=1 swiotlb=2048 loop.max_part=7" \
-            --base 0x00000000 \
-            --pagesize 4096 \
-            --ramdisk_offset 0x01000000 \
-            --tags_offset 0x00000100 \
-            --kernel_offset 0x00008000 \
-            --os_version 16.0.0 \
-            --os_patch_level 2026-02 \
-            --header_version 2 \
-            --board chiron \
-            -o out/arch/arm64/boot/boot.img
-          
-          echo "✅ boot.img 创建成功，大小: $(wc -c < out/arch/arm64/boot/boot.img) 字节"
-
-      - name: 📤 上传产物
+      - name: 📤 上传编译日志
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chiron-boot-img
-          path: out/arch/arm64/boot/boot.img
+          name: build-logs
+          path: |
+            full-build.log
+            out/.config
