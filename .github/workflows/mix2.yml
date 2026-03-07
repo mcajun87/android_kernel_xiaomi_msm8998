@@ -1,4 +1,4 @@
-name: Build chiron Kernel - 最终修复版
+name: Build chiron Kernel - 最终自动化版
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
           make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
           libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
-          device-tree-compiler
+          device-tree-compiler expect
           sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
 
       - name: 📥 下载 mkbootimg
@@ -37,46 +37,84 @@ jobs:
         run: |
           wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
-      - name: ⚙️ 配置内核（非交互模式）
+      - name: ⚙️ 第一步：加载基础配置
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make O=out ${{ github.event.inputs.defconfig }}
+
+      - name: ⚙️ 第二步：使用 expect 自动处理配置
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 1. 加载基础配置
-          make O=out ${{ github.event.inputs.defconfig }}
+          # 创建 expect 脚本自动回答所有问题
+          cat > auto-config.exp << 'EOF'
+          #!/usr/bin/expect -f
+          set timeout 10
+          log_user 1
           
-          # 2. 设置所有可能的选项为默认值
-          # 使用 yes 命令自动回答所有提示为默认值
-          yes "" | make O=out oldconfig
+          spawn make O=out oldconfig
           
-          # 3. 手动设置 APatch 所需选项
+          expect {
+            "Kprobes (KPROBES)" {
+              send "n\r"
+              exp_continue
+            }
+            "(NEW)" {
+              send "\r"
+              exp_continue
+            }
+            "choice" {
+              send "\r"
+              exp_continue
+            }
+            "Enter" {
+              send "\r"
+              exp_continue
+            }
+            ">" {
+              send "\r"
+              exp_continue
+            }
+            eof
+          }
+          EOF
+          
+          chmod +x auto-config.exp
+          ./auto-config.exp
+
+      - name: ⚙️ 第三步：设置 APatch 选项
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
           scripts/config --file out/.config -e CONFIG_KPROBES
-          
-          # 4. 禁用有问题的选项
           scripts/config --file out/.config -d CONFIG_BPF
           scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
           
-          # 5. 最终处理（自动回答所有新选项为默认值）
+          # 最终确认所有配置
           make O=out olddefconfig
-          
-          echo "✅ 配置完成"
 
-      - name: ⚙️ 编译内核
+      - name: ⚙️ 第四步：编译内核
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 编译 DTB 和内核
-          make O=out -j$(nproc) Image.gz dtbs
+          # 编译 DTB
+          make O=out -j$(nproc) dtbs
           
-          # 检查结果
-          if [ -f out/arch/arm64/boot/Image.gz ]; then
+          # 编译内核
+          make O=out -j$(nproc) Image
+          
+          # 压缩内核
+          if [ -f out/arch/arm64/boot/Image ]; then
+            gzip -9 -c out/arch/arm64/boot/Image > out/arch/arm64/boot/Image.gz
             echo "✅ 内核编译成功"
-            ls -la out/arch/arm64/boot/Image.gz
           else
             echo "❌ 内核编译失败"
             exit 1
@@ -84,14 +122,8 @@ jobs:
 
       - name: 📦 打包 dtb.img
         run: |
-          DTB_FILES=$(find out/arch/arm64/boot -name "*.dtb" 2>/dev/null || true)
-          if [ -n "$DTB_FILES" ]; then
-            cat $DTB_FILES > out/arch/arm64/boot/dtb.img
-            echo "dtb.img 创建成功"
-          else
-            echo "⚠️ 没有 DTB 文件"
-            touch out/arch/arm64/boot/dtb.img
-          fi
+          find out/arch/arm64/boot -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
+          echo "dtb.img 大小: $(wc -c < out/arch/arm64/boot/dtb.img 2>/dev/null || echo 0) 字节"
 
       - name: 📦 打包 boot.img
         run: |
@@ -116,5 +148,5 @@ jobs:
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: chiron-boot
+          name: chiron-final
           path: out/arch/arm64/boot/boot.img
