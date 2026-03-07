@@ -1,4 +1,4 @@
-name: Build chiron Kernel - NR_CPUS 修复版
+name: chiron 终极修复版禁用
 
 on:
   workflow_dispatch:
@@ -45,7 +45,7 @@ jobs:
           # 1. 加载基础配置
           make O=out ${{ github.event.inputs.defconfig }}
           
-          # 2. 设置正确的 NR_CPUS 值（骁龙835是8核）
+          # 2. 设置 NR_CPUS
           scripts/config --file out/.config --set-val NR_CPUS 8
           
           # 3. 开启 APatch 必需选项
@@ -53,18 +53,21 @@ jobs:
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
           
-          # 4. 禁用有问题的选项
+          # 4. 🔥 禁用所有有问题的传感器驱动
+          scripts/config --file out/.config -d CONFIG_BMI160
+          scripts/config --file out/.config -d CONFIG_SENSORS_BMI160
+          scripts/config --file out/.config -d CONFIG_INPUT_BMI160
+          scripts/config --file out/.config -d CONFIG_SPK_ID
+          scripts/config --file out/.config -d CONFIG_MFD_SPK_ID
+          
+          # 5. 禁用所有可能出问题的选项
           scripts/config --file out/.config -d CONFIG_BPF
           scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
           scripts/config --file out/.config -d CONFIG_KPROBES
           
-          # 5. 自动处理配置
+          # 6. 自动处理
           make O=out olddefconfig
-          
-          # 6. 验证 NR_CPUS
-          echo "✅ NR_CPUS 设置为:"
-          grep CONFIG_NR_CPUS out/.config
 
       - name: ⚙️ 编译内核
         run: |
@@ -77,23 +80,21 @@ jobs:
           # 编译内核
           make O=out -j$(nproc) Image
           
-          # 压缩内核
+          # 检查结果
           if [ -f out/arch/arm64/boot/Image ]; then
             gzip -9 -c out/arch/arm64/boot/Image > out/arch/arm64/boot/Image.gz
             echo "✅ 内核编译成功"
-            ls -la out/arch/arm64/boot/Image.gz
           else
             echo "❌ 内核编译失败"
             exit 1
           fi
 
-      - name: 📦 打包 dtb.img
-        run: |
-          find out/arch/arm64/boot -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
-          echo "dtb.img 大小: $(wc -c < out/arch/arm64/boot/dtb.img 2>/dev/null || echo 0) 字节"
-
       - name: 📦 打包 boot.img
         run: |
+          # 创建 dtb.img
+          find out/arch/arm64/boot -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
+          
+          # 创建 boot.img
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
@@ -108,13 +109,12 @@ jobs:
             --os_patch_level 2026-02 \
             --header_version 2 \
             --board chiron \
-            -o out/arch/arm64/boot/boot.img
+            -o boot.img
           
           echo "✅ boot.img 创建成功"
-          ls -la out/arch/arm64/boot/boot.img
 
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: chiron-boot
-          path: out/arch/arm64/boot/boot.img
+          path: boot.img
