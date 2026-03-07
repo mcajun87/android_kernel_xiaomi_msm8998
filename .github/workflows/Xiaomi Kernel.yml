@@ -1,4 +1,4 @@
-name: Build chiron Kernel (LineageOS 23.2 & APatch Ready)
+name: Build chiron Kernel (LineageOS 23.2 & APatch Ready) - Clang 14
 
 on:
   workflow_dispatch:
@@ -21,37 +21,35 @@ jobs:
           sudo apt update -y
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
           make gcc-aarch64-linux-gnu git wget libncurses5-dev \
-          libncursesw5-dev xz-utils liblz4-tool
+          libncursesw5-dev xz-utils liblz4-tool libtinfo5
 
-      - name: 📥 下载并配置 Clang 18
+      - name: 📥 下载并配置 Clang 14（更稳定的版本）
         run: |
-          # 修正为真实存在的 ubuntu-18.04 版本
-          wget -qO- https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz | tar -xJf -
-          mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04 clang-18
-          echo "PATH=$PWD/clang-18/bin:$PATH" >> $GITHUB_ENV
+          wget -qO- https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.6/clang+llvm-14.0.6-x86_64-linux-gnu-ubuntu-18.04.tar.xz | tar -xJf -
+          mv clang+llvm-14.0.6-x86_64-linux-gnu-ubuntu-18.04 clang-14
+          echo "PATH=$PWD/clang-14/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$PWD/clang-14/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: 📥 下载并编译 mkbootimg
         run: |
           git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
           cd mkbootimg
-          # 强制使用系统默认的原生编译器，而不是交叉编译器
           make CC=gcc
           sudo cp mkbootimg /usr/local/bin/
           cd .. && rm -rf mkbootimg
 
       - name: 📥 下载 LineageOS ramdisk
         run: |
-          # 修正为 raw 下载链接，避免下载到 HTML 页面
           wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
-      - name: ⚙️ 配置并编译内核
+      - name: ⚙️ 配置并编译内核（方案二：Clang 14 + 保留 BTF）
         run: |
-          # 1. 先加载默认配置
-          make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- ${{ github.event.inputs.defconfig }}
+          # 1. 加载默认配置
+          make O=out ARCH=arm64 HOSTCC=gcc ${{ github.event.inputs.defconfig }}
           
-          # 2. 【关键】强制开启 APatch 所需的选项
+          # 2. 配置 APatch 选项（保留所有选项，包括 BTF）
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
@@ -60,17 +58,23 @@ jobs:
           scripts/config --file out/.config -e CONFIG_KPROBES
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF
+          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_BTF  # 保留，因为 Clang 14 兼容性更好
           
-          # 3. 编译内核和DTB
+          # 3. 自动处理配置
+          make O=out ARCH=arm64 HOSTCC=gcc olddefconfig
+          
+          # 4. 显示编译器版本和配置
+          echo "🔍 Clang 版本:"
+          clang --version | head -1
+          echo "🔍 BPF 配置状态:"
+          grep -E "CONFIG_BPF|CONFIG_DEBUG_INFO_BTF" out/.config || echo "未找到相关配置"
+          
+          # 5. 编译内核
           make O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image.gz dtbs
 
-      - name: 📦 打包 boot.img (使用 LineageOS 23.2 参数)
+      - name: 📦 打包 boot.img
         run: |
-          # 1. 打包 dtb.img (APatch 兼容性关键)
           mkdtimg create out/arch/arm64/boot/dtb.img out/arch/arm64/boot/dts/qcom/*.dtb
-          
-          # 2. 打包 boot.img
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
@@ -90,5 +94,5 @@ jobs:
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: chiron-lineage23.2-apatch-boot.img
+          name: chiron-lineage23.2-apatch-clang14-boot.img
           path: out/arch/arm64/boot/boot.img
