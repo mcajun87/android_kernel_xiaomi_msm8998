@@ -1,4 +1,4 @@
-name: Build chiron Kernel - 详细诊断
+name: Build chiron Kernel - NR_CPUS 修复版
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
           make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
           libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
-          device-tree-compiler tree
+          device-tree-compiler
           sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
 
       - name: 📥 下载 mkbootimg
@@ -42,60 +42,79 @@ jobs:
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 加载基础配置
+          # 1. 加载基础配置
           make O=out ${{ github.event.inputs.defconfig }}
           
-          # 开启 APatch 必需选项
+          # 2. 设置正确的 NR_CPUS 值（骁龙835是8核）
+          scripts/config --file out/.config --set-val NR_CPUS 8
+          
+          # 3. 开启 APatch 必需选项
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
-          scripts/config --file out/.config -e CONFIG_KPROBES
           
-          # 禁用有问题的选项
+          # 4. 禁用有问题的选项
           scripts/config --file out/.config -d CONFIG_BPF
           scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
+          scripts/config --file out/.config -d CONFIG_KPROBES
           
-          # 自动处理所有配置
+          # 5. 自动处理配置
           make O=out olddefconfig
+          
+          # 6. 验证 NR_CPUS
+          echo "✅ NR_CPUS 设置为:"
+          grep CONFIG_NR_CPUS out/.config
 
-      - name: ⚙️ 编译内核（详细日志）
+      - name: ⚙️ 编译内核
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 编译并实时输出，同时保存到文件
-          make O=out -j$(nproc) 2>&1 | tee full-build.log | while IFS= read -r line; do
-            echo "$line"
-            # 检测错误
-            if echo "$line" | grep -q "error:"; then
-              echo "❌ 发现编译错误: $line"
-            fi
-          done
+          # 编译 DTB
+          make O=out -j$(nproc) dtbs
           
-          # 检查编译结果
-          if [ ${PIPESTATUS[0]} -ne 0 ]; then
-            echo "❌ 编译失败"
+          # 编译内核
+          make O=out -j$(nproc) Image
+          
+          # 压缩内核
+          if [ -f out/arch/arm64/boot/Image ]; then
+            gzip -9 -c out/arch/arm64/boot/Image > out/arch/arm64/boot/Image.gz
+            echo "✅ 内核编译成功"
+            ls -la out/arch/arm64/boot/Image.gz
+          else
+            echo "❌ 内核编译失败"
             exit 1
           fi
 
-      - name: 🔍 分析错误日志
-        if: failure()
+      - name: 📦 打包 dtb.img
         run: |
-          echo "=== 错误摘要 ==="
-          grep -n "error:" full-build.log || echo "没有找到 error:"
-          grep -n "Error" full-build.log || echo "没有找到 Error"
-          grep -n "warning:" full-build.log | tail -20
-          
-          echo ""
-          echo "=== 最后50行日志 ==="
-          tail -50 full-build.log
+          find out/arch/arm64/boot -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
+          echo "dtb.img 大小: $(wc -c < out/arch/arm64/boot/dtb.img 2>/dev/null || echo 0) 字节"
 
-      - name: 📤 上传完整日志
-        if: always()
+      - name: 📦 打包 boot.img
+        run: |
+          mkbootimg \
+            --kernel out/arch/arm64/boot/Image.gz \
+            --dtb out/arch/arm64/boot/dtb.img \
+            --ramdisk ./ramdisk.cpio \
+            --cmdline "androidboot.console=ttyMSM0 androidboot.hardware=qcom androidboot.boot_devices=soc/1da4000.ufshc msm_rtb.filter=0x37 ehci-hcd.park=3 service_locator.enable=1 swiotlb=2048 loop.max_part=7" \
+            --base 0x00000000 \
+            --pagesize 4096 \
+            --ramdisk_offset 0x01000000 \
+            --tags_offset 0x00000100 \
+            --kernel_offset 0x00008000 \
+            --os_version 16.0.0 \
+            --os_patch_level 2026-02 \
+            --header_version 2 \
+            --board chiron \
+            -o out/arch/arm64/boot/boot.img
+          
+          echo "✅ boot.img 创建成功"
+          ls -la out/arch/arm64/boot/boot.img
+
+      - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: full-build-log
-          path: |
-            full-build.log
-            out/.config
+          name: chiron-boot
+          path: out/arch/arm64/boot/boot.img
