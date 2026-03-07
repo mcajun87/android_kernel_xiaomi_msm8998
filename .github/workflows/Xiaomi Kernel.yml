@@ -1,4 +1,4 @@
-name: Build chiron Kernel (LineageOS 23.2 & APatch Ready) - GCC Final v2
+name: Build chiron Kernel - GCC方案二（调试模式）
 
 on:
   workflow_dispatch:
@@ -16,16 +16,16 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: 🛠️ 安装依赖（GCC 12 + 额外工具）
+      - name: 🛠️ 安装依赖
         run: |
           sudo apt update -y
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
           make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
           libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
-          device-tree-compiler
+          device-tree-compiler tree
           sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
 
-      - name: 📥 下载并编译 mkbootimg
+      - name: 📥 下载 mkbootimg
         run: |
           git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
           cd mkbootimg
@@ -37,15 +37,24 @@ jobs:
         run: |
           wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
-      - name: ⚙️ 配置并编译内核（保留 BPF）
+      - name: 🔍 查看内核配置
+        run: |
+          echo "内核版本信息:"
+          head -10 Makefile
+          echo ""
+          echo "可用的配置文件:"
+          find arch/arm64/configs -name "*.config" -o -name "*defconfig*" | sort
+
+      - name: ⚙️ 配置内核（记录详细日志）
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 1. 加载默认配置
-          make O=out ${{ github.event.inputs.defconfig }}
+          # 1. 加载配置
+          echo "加载配置: ${{ github.event.inputs.defconfig }}"
+          make O=out ${{ github.event.inputs.defconfig }} 2>&1 | tee config.log
           
-          # 2. 强制开启 APatch 所需选项（保留 BPF）
+          # 2. 修改配置
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
@@ -54,39 +63,69 @@ jobs:
           scripts/config --file out/.config -e CONFIG_KPROBES
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO
           scripts/config --file out/.config -e CONFIG_DEBUG_INFO_DWARF4
-          
-          # 🔧 尝试修复 BPF 问题：使用旧版 DWARF
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
-          scripts/config --file out/.config -e CONFIG_DEBUG_INFO_REDUCED
           
-          # 3. 自动处理配置
+          # 3. 最终配置
           make O=out olddefconfig
           
-          # 4. 显示编译器信息
-          echo "🔍 GCC 版本:"
-          aarch64-linux-gnu-gcc --version | head -2
+          # 4. 显示关键配置
+          echo "关键配置状态:"
+          grep -E "CONFIG_(KALLSYMS|MODULES|DEBUG_INFO|BPF)" out/.config
+
+      - name: ⚙️ 编译内核（单线程，便于调试）
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 5. 编译内核（单线程，便于观察错误）
-          make O=out -j1 Image.gz dtbs 2>&1 | tee build.log
+          # 先编译 DTB
+          echo "编译 DTB..."
+          make O=out -j1 dtbs 2>&1 | tee dtbs.log
+          
+          # 再编译内核
+          echo "编译内核..."
+          make O=out -j1 Image.gz 2>&1 | tee kernel.log
+          
+          # 检查结果
+          echo "编译结果:"
+          ls -la out/arch/arm64/boot/
 
-      - name: 📦 检查编译错误
-        if: failure()
+      - name: 📦 收集 DTB 文件
         run: |
-          echo "🔍 检查 BPF 相关错误:"
-          grep -A 10 -B 10 "bpf" build.log || echo "未找到 BPF 错误"
-          echo "🔍 最后的编译日志:"
-          tail -50 build.log
+          echo "查找所有 DTB 文件:"
+          find out -name "*.dtb" -type f | tee dtb-list.txt
+          
+          DTB_COUNT=$(cat dtb-list.txt | wc -l)
+          if [ "$DTB_COUNT" -eq 0 ]; then
+            echo "❌ 没有找到 DTB 文件"
+            echo "检查 DTS 编译日志:"
+            cat dtbs.log | grep -i error -A 5 -B 5 || echo "没有发现错误"
+            exit 1
+          fi
+          
+          echo "✅ 找到 $DTB_COUNT 个 DTB 文件"
+          cat dtb-list.txt
 
-      - name: 📦 打包 dtb.img
+      - name: 📦 创建 dtb.img
         run: |
-          # 使用 dtc 手动打包 DTB
-          mkdir -p out/arch/arm64/boot/dtb
-          for dtb in out/arch/arm64/boot/dts/qcom/*.dtb; do
-            cat "$dtb" >> out/arch/arm64/boot/dtb.img
-          done
+          if [ -f out/arch/arm64/boot/dtb.img ]; then
+            rm out/arch/arm64/boot/dtb.img
+          fi
+          
+          # 方法1: 尝试使用 cat
+          find out -name "*.dtb" -type f -exec cat {} \; > out/arch/arm64/boot/dtb.img
+          echo "方法1完成，大小: $(wc -c < out/arch/arm64/boot/dtb.img) 字节"
+          
+          # 验证
+          file out/arch/arm64/boot/dtb.img
 
       - name: 📦 打包 boot.img
+        if: success()
         run: |
+          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
+            echo "❌ 内核镜像不存在"
+            exit 1
+          fi
+          
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
@@ -102,11 +141,13 @@ jobs:
             --header_version 2 \
             --board chiron \
             -o out/arch/arm64/boot/boot.img
+          
+          echo "✅ boot.img 创建成功"
 
       - name: 📤 上传产物
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chiron-lineage23.2-gcc-withbpf
+          name: build-results
           path: |
-            out/arch/arm64/boot/boot.img
-            build.log
+            out/arch/arm64/b
