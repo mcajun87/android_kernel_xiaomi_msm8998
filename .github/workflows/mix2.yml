@@ -1,4 +1,4 @@
-name: Build chiron Kernel - 最终自动化版
+name: Build chiron Kernel - 修复依赖版
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           sudo apt install -y bc bison flex libssl-dev libelf-dev \
           make gcc-12-aarch64-linux-gnu git wget libncurses5-dev \
           libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
-          device-tree-compiler expect
+          device-tree-compiler
           sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-12 100
 
       - name: 📥 下载 mkbootimg
@@ -37,70 +37,39 @@ jobs:
         run: |
           wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
 
-      - name: ⚙️ 第一步：加载基础配置
+      - name: ⚙️ 配置内核
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          # 1. 加载基础配置
           make O=out ${{ github.event.inputs.defconfig }}
-
-      - name: ⚙️ 第二步：使用 expect 自动处理配置
-        run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
           
-          # 创建 expect 脚本自动回答所有问题
-          cat > auto-config.exp << 'EOF'
-          #!/usr/bin/expect -f
-          set timeout 10
-          log_user 1
+          # 2. 设置 NR_CPUS
+          scripts/config --file out/.config --set-val NR_CPUS 8
           
-          spawn make O=out oldconfig
-          
-          expect {
-            "Kprobes (KPROBES)" {
-              send "n\r"
-              exp_continue
-            }
-            "(NEW)" {
-              send "\r"
-              exp_continue
-            }
-            "choice" {
-              send "\r"
-              exp_continue
-            }
-            "Enter" {
-              send "\r"
-              exp_continue
-            }
-            ">" {
-              send "\r"
-              exp_continue
-            }
-            eof
-          }
-          EOF
-          
-          chmod +x auto-config.exp
-          ./auto-config.exp
-
-      - name: ⚙️ 第三步：设置 APatch 选项
-        run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          
+          # 3. 开启 APatch 必需选项
           scripts/config --file out/.config -e CONFIG_KALLSYMS
           scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
           scripts/config --file out/.config -e CONFIG_MODULES
-          scripts/config --file out/.config -e CONFIG_KPROBES
+          
+          # 4. 🔧 开启 I2C 支持（BMI160 依赖）
+          scripts/config --file out/.config -e CONFIG_I2C
+          scripts/config --file out/.config -e CONFIG_I2C_CHARDEV
+          
+          # 5. 🔧 开启 PINCTRL 支持（SPK_ID 依赖）
+          scripts/config --file out/.config -e CONFIG_PINCTRL
+          scripts/config --file out/.config -e CONFIG_PINCTRL_MSM
+          
+          # 6. 禁用 BPF 相关（保持原有）
           scripts/config --file out/.config -d CONFIG_BPF
           scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
           scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
           
-          # 最终确认所有配置
+          # 7. 自动处理
           make O=out olddefconfig
 
-      - name: ⚙️ 第四步：编译内核
+      - name: ⚙️ 编译内核
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -111,7 +80,6 @@ jobs:
           # 编译内核
           make O=out -j$(nproc) Image
           
-          # 压缩内核
           if [ -f out/arch/arm64/boot/Image ]; then
             gzip -9 -c out/arch/arm64/boot/Image > out/arch/arm64/boot/Image.gz
             echo "✅ 内核编译成功"
@@ -120,13 +88,10 @@ jobs:
             exit 1
           fi
 
-      - name: 📦 打包 dtb.img
-        run: |
-          find out/arch/arm64/boot -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
-          echo "dtb.img 大小: $(wc -c < out/arch/arm64/boot/dtb.img 2>/dev/null || echo 0) 字节"
-
       - name: 📦 打包 boot.img
         run: |
+          find out/arch/arm64/boot -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
+          
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
@@ -141,12 +106,12 @@ jobs:
             --os_patch_level 2026-02 \
             --header_version 2 \
             --board chiron \
-            -o out/arch/arm64/boot/boot.img
+            -o boot.img
           
           echo "✅ boot.img 创建成功"
 
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: chiron-final
-          path: out/arch/arm64/boot/boot.img
+          name: chiron-boot
+          path: boot.img
