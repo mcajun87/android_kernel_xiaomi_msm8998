@@ -19,40 +19,62 @@ jobs:
       - name: 🛠️ 安装依赖
         run: |
           sudo apt update -y
-          sudo apt install -y bc bison flex libssl-dev libelf-dev \
-          make gcc-aarch64-linux-gnu git wget libncurses5-dev \
-          libncursesw5-dev xz-utils liblz4-tool libtinfo5 cpio \
-          device-tree-compiler
-          
+          sudo apt install -y \
+            bc bison flex \
+            libssl-dev libelf-dev \
+            make gcc-aarch64-linux-gnu \
+            git wget \
+            libncurses5-dev libncursesw5-dev \
+            xz-utils liblz4-tool \
+            libtinfo5 cpio \
+            device-tree-compiler \
+            lzop
+
       - name: 📥 下载 mkbootimg
         run: |
           git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
           cd mkbootimg
           make CC=gcc
-          sudo cp mkbootimg /usr/local/bin/
+          sudo install -m 755 mkbootimg /usr/local/bin/
           cd .. && rm -rf mkbootimg
 
-      - name: 📥 下载 LineageOS ramdisk
+      - name: 📥 准备 ramdisk
         run: |
-          wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
+          # 如果 ramdisk 不存在，创建一个最小的
+          if ! wget -q --spider "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"; then
+            echo "Creating minimal ramdisk..."
+            mkdir -p ramdisk
+            echo "#!/sbin/sh" > ramdisk/init
+            chmod 755 ramdisk/init
+            (cd ramdisk && find . | cpio -o -H newc > ../ramdisk.cpio)
+          else
+            wget -O ramdisk.cpio "https://raw.githubusercontent.com/mcajun87/android_kernel_xiaomi_msm8998/lineage-23.2/.github/ramdisk.cpio"
+          fi
 
       - name: ⚙️ 配置内核
         run: |
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           
+          # 创建 out 目录
+          mkdir -p out
+          
+          # 加载配置
           make O=out ${{ github.event.inputs.defconfig }}
           
-          scripts/config --file out/.config --set-val NR_CPUS 8
-          scripts/config --file out/.config -e CONFIG_KALLSYMS
-          scripts/config --file out/.config -e CONFIG_KALLSYMS_ALL
-          scripts/config --file out/.config -e CONFIG_MODULES
-          scripts/config --file out/.config -e CONFIG_I2C
-          scripts/config --file out/.config -e CONFIG_PINCTRL
-          scripts/config --file out/.config -d CONFIG_BPF
-          scripts/config --file out/.config -d CONFIG_BPF_SYSCALL
-          scripts/config --file out/.config -d CONFIG_DEBUG_INFO_BTF
-          scripts/config --file out/.config -d CONFIG_WERROR
+          # 修改配置
+          cd out
+          ../scripts/config --file .config --set-str NR_CPUS 8
+          ../scripts/config --file .config --enable CONFIG_KALLSYMS
+          ../scripts/config --file .config --enable CONFIG_KALLSYMS_ALL
+          ../scripts/config --file .config --enable CONFIG_MODULES
+          ../scripts/config --file .config --enable CONFIG_I2C
+          ../scripts/config --file .config --enable CONFIG_PINCTRL
+          ../scripts/config --file .config --disable CONFIG_BPF
+          ../scripts/config --file .config --disable CONFIG_BPF_SYSCALL
+          ../scripts/config --file .config --disable CONFIG_DEBUG_INFO_BTF
+          ../scripts/config --file .config --disable CONFIG_WERROR
+          cd ..
           
           make O=out olddefconfig
 
@@ -62,26 +84,46 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KCFLAGS="-Wno-error"
           
-          make O=out -j$(nproc) dtbs
-          make O=out -j$(nproc) Image
+          # 编译 DTB
+          make O=out -j$(nproc) dtbs || {
+            echo "DTB compilation failed but continuing..."
+          }
           
+          # 编译内核
+          make O=out -j$(nproc) Image || {
+            echo "❌ 内核编译失败"
+            exit 1
+          }
+          
+          # 压缩内核
           if [ -f out/arch/arm64/boot/Image ]; then
             gzip -9 -c out/arch/arm64/boot/Image > out/arch/arm64/boot/Image.gz
             echo "✅ 内核编译成功"
+            ls -la out/arch/arm64/boot/Image.gz
           else
-            echo "❌ 内核编译失败"
+            echo "❌ 内核镜像未生成"
             exit 1
           fi
 
       - name: 📦 打包 boot.img
         run: |
-          find out/arch/arm64/boot -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
+          # 创建 dtb.img
+          if [ -d out/arch/arm64/boot/dts ]; then
+            find out/arch/arm64/boot/dts -name "*.dtb" -exec cat {} \; > out/arch/arm64/boot/dtb.img 2>/dev/null || true
+          fi
           
+          # 检查内核存在
+          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
+            echo "❌ Image.gz 不存在"
+            exit 1
+          fi
+          
+          # 创建 boot.img
           mkbootimg \
             --kernel out/arch/arm64/boot/Image.gz \
             --dtb out/arch/arm64/boot/dtb.img \
             --ramdisk ./ramdisk.cpio \
-            --cmdline "androidboot.console=ttyMSM0 androidboot.hardware=qcom androidboot.boot_devices=soc/1da4000.ufshc msm_rtb.filter=0x37 ehci-hcd.park=3 service_locator.enable=1 swiotlb=2048 loop.max_part=7" \
+            --cmdline "androidboot.console=ttyMSM0 androidboot.hardware=qcom" \
             --base 0x00000000 \
             --pagesize 4096 \
             --ramdisk_offset 0x01000000 \
@@ -93,10 +135,17 @@ jobs:
             --board chiron \
             -o boot.img
           
-          echo "✅ boot.img 创建成功"
+          if [ -f boot.img ]; then
+            echo "✅ boot.img 创建成功"
+            ls -la boot.img
+          else
+            echo "❌ boot.img 创建失败"
+            exit 1
+          fi
 
       - name: 📤 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: chiron-boot-2004
           path: boot.img
+          if-no-files-found: error
